@@ -1,4 +1,6 @@
 import os
+import time
+import sys
 import json
 import shutil
 import requests
@@ -14,13 +16,61 @@ def get_context(playlist_id):
     Returns the name of the metadata file.
     '''
     channel_dir = os.path.join(root_dir, playlist_id)
+    # output files
     metadata_filename = os.path.join(channel_dir, 'video_metadata.tsv')
     urls_filename = os.path.join(channel_dir, 'video_urls.csv')
     
+    if IS_DEV:
+        channel_dir = channel_dir + '__test'
+        metadata_filename = metadata_filename.replace('.tsv', '__test.tsv')
+        urls_filename = urls_filename.replace('.csv', '__test.csv')
+    
+    # make directories for outputs
     os.makedirs(channel_dir, exist_ok=True)
     shutil.chown(channel_dir, group='smapp')
+    
     return metadata_filename, urls_filename
 
+def log(text):
+    '''
+    A logger will be put here
+    '''
+    print(text)
+
+def load_response(response): 
+    '''
+    Loads the response to json, and checks for errors.
+    '''
+    response_json = response.json()
+    try: 
+        response.raise_for_status()
+    except: 
+        response_json = handle_error(response_json)
+
+    return response_json
+
+
+def handle_error(error):
+    '''
+    Parses errors if the request raised a status.
+    '''
+    reasons = []
+    for e in error['error']['errors']:
+        reasons.append(e['reason'])
+    if 'dailyLimitExceeded' in reasons:
+        log(error)
+        sys.exit()
+    elif 'limitExceeded' in reasons:
+        log(error)
+        time.sleep(60 * 60)
+    elif 'quotaExceeded' in reasons:
+        log(error)
+        time.sleep(60 * 60)
+    elif 'badRequest' in reasons:
+        log(error)
+    return False
+    
+    
 def is_user(channel_url):
     '''
     Checks if url is channel or user
@@ -30,8 +80,10 @@ def is_user(channel_url):
     elif 'youtube.com/channel/' in channel_url:
         return False
     else:
-        return
-
+        print("Didn't recognize url {}".format(channel_url))
+        sys.exit()
+        
+        
 def get_youtube_id(channel_url):
     '''
     From a URL returns the YT ID.
@@ -41,66 +93,67 @@ def get_youtube_id(channel_url):
 
 def get_playlist_id(username, key):
     '''
-    Get a playlist ID (channel) from a username
+    Get a playlist ID (channel) from a username.
     '''
-    url = ("https://www.googleapis.com/youtube/v3/channels"
-           "?part=contentDetails"
-           "&forUsername={}&key={}".format(username,key))
-    response = requests.get(url)
-    if response.ok:
-        response_json = json.loads(response.text)
-        if "items" in response_json:
-            if response_json['items']:
-                channel_id = response_json['items'][0]['id']
-                return channel_id
-    return -1
+    http_endpoint = ("https://www.googleapis.com/youtube/v3/channels"
+                     "?part=contentDetails"
+                     "&forUsername={}&key={}".format(username,key))
+    response = requests.get(http_endpoint)
+    response_json = load_response(response)
+    if response_json:
+        if "items" in response_json and response_json['items']:
+            channel_id = response_json['items'][0]['id']
+            return channel_id
+    else:
+        return response_json
 
 def get_video_urls_from_playlist_id(playlist_id, key):
     '''
     Returns all video URLs from a play list id.
     '''
-    url = ("https://www.googleapis.com/youtube/v3/playlistItems"
-           "?part=snippet&playlistId={}"
-           "&maxResults=50"
-           "&key={}".format(playlist_id, key))
-    
+    http_endpoint = ("https://www.googleapis.com/youtube/v3/playlistItems"
+                     "?part=snippet&playlistId={}"
+                     "&maxResults=50&key={}".format(playlist_id, key))
     next_page_token = None
-    ids = []
+    video_ids = []
+    iterations = 0
     run = True
     while run:
         if next_page_token: 
-            url += "&pageToken={}".format(next_page_token)
-        response = requests.get(url)
-        if response.ok:
-            response_json = json.loads(response.text)
+            http_endpoint += "&pageToken={}".format(next_page_token)    
+        response = requests.get(http_endpoint)
+        response_json = load_response(response)
+        if response_json:
             for item in response_json['items']:
-                ids.append(item['snippet']['resourceId']['videoId'])
+                video_ids.append(item['snippet']['resourceId']['videoId'])
             try: 
                 next_page_token = response_json['nextPageToken']
+                iterations += 1
             except:
                 run = False
-            print(">> {} Videos to parse".format(len(ids)))
-        else:
-            print(response)
-            run = False
+            if IS_DEV:
+                if iterations > 2: 
+                    run = False
+            log(">> {} Videos to parse".format(len(video_ids)))
+        time.sleep(1)
     
-    return ids
+    return video_ids
 
 def parse_video_metadata(item):
     '''
     Parses a JSON object for relevant fields
-    '''
+    '''    
     video_meta = dict(
-        channel_title = item["snippet"]["channelTitle"],
-        channel_id =item["snippet"]["channelId"],
-        video_publish_date = item["snippet"]["publishedAt"],
-        video_title = item["snippet"]["title"],
-        video_description = item["snippet"]["description"],
-        video_category = item["snippet"]["categoryId"],
-        video_view_count = item["statistics"]["viewCount"],
-        video_comment_count = item["statistics"]["commentCount"],
-        video_like_count = item["statistics"]["likeCount"],
-        video_dislike_count = item["statistics"]["dislikeCount"],
+        channel_title = item["snippet"].get("channelTitle"),
+        channel_id =item["snippet"].get("channelId"),
+        video_publish_date = item["snippet"].get("publishedAt"),
+        video_title = item["snippet"].get("title"),
+        video_description = item["snippet"].get("description"),
+        video_category = item["snippet"].get("categoryId"),
+        video_view_count = item["statistics"].get("viewCount"),
+        video_comment_count = item["statistics"].get("commentCount"),
+        video_like_count = item["statistics"].get("likeCount"),
+        video_dislike_count = item["statistics"].get("dislikeCount"),
         video_thumbnail = item["snippet"]["thumbnails"]["high"]["url"],
         collection_date = today
     )
@@ -115,19 +168,21 @@ def get_video_metadata(video_id, key):
                      "?part=statistics,snippet"
                      "&id={}&key={}".format(video_id, key))
     response = requests.get(http_endpoint)
-    if response.ok:
-        response_json = json.loads(response.text)
-        if 'items' in response_json:
-            video_meta = response_json['items'][0]
-            return parse_video_metadata(video_meta)
-    return -1
+    response_json = load_response(response)
+    video_meta = {}
+    if response_json:   
+        video_meta = response_json['items'][0]
+        video_meta = parse_video_metadata(video_meta)
+        
+    return video_meta
+
 
 def parse_channel(channel):
-    print(channel)
+    log(channel)
     yt_id = get_youtube_id(channel)
     playlist_id = get_playlist_id(yt_id, key) if is_user(channel) else yt_id    
     if not playlist_id:
-        print(">> Getting the playlist ID is not working for {}".format(yt_id))
+        log(">> Getting the playlist ID is not working for {}".format(yt_id))
         return
     # some quirk with channel or playlist names, go figure...
     playlist_id = 'UU' + playlist_id[2:]
@@ -136,25 +191,36 @@ def parse_channel(channel):
         if not os.path.exists(urls_filename):
             video_urls = get_video_urls_from_playlist_id(playlist_id, key)
             if not video_urls:
-                print(">> Listing Video URLs is not working for {}".format(yt_id))
+                log(">> Listing Video URLs is not working for {}".format(yt_id))
                 return
             pd.DataFrame(video_urls).to_csv(urls_filename, index=False)
-        else:
-            video_urls = pd.read_csv(urls_filename)['0'].tolist()
+            shutil.chown(urls_filename, group='smapp')
+            log(">>> Video urls to parse saved here: {}".format(urls_filename))
 
+        else:
+            log(">> Video urls saved previously.")
+            video_urls = pd.read_csv(urls_filename)['0'].tolist()
+        
         # parse each video from the user
-        video_meta = []
-        for video_url in video_urls:
-            video_meta.append(get_video_metadata(video_url, key))
-        df = pd.DataFrame(video_meta)
+        if IS_DEV: video_urls = video_urls[:100] 
+        videos_meta = []
+        for videos_url in tqdm(video_urls):
+            v_m = get_video_metadata(video_url, key)
+            videos_meta.append(v_m)
+        df = pd.DataFrame(videos_meta)
         df.to_csv(metadata_filename, index=False, sep='\t')  
         shutil.chown(metadata_filename, group='smapp')
+        log("!!!! Video metadata saved here: {}".format(metadata_filename))
+    else:
+        log("!!!! ABD")
 
 
 def main():
     df_users = pd.read_csv(input_file)
     channels = df_users['users'].tolist()
-    with Pool(4) as pool:
-        pool.map(parse_channel, channels)
+    if IS_DEV: channels = channels[:10]
+    for channel in channels:
+        parse_channel(channel)
+        time.sleep(3)
 
 main()
