@@ -27,7 +27,7 @@ def get_context(playlist_id):
     
     # make directories for outputs
     os.makedirs(channel_dir, exist_ok=True)
-    shutil.chown(channel_dir, group='smapp')
+    if IS_HPC: shutil.chown(channel_dir, group='smapp')
     
     return metadata_filename, urls_filename
 
