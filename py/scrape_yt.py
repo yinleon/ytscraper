@@ -41,7 +41,12 @@ def load_response(response):
     '''
     Loads the response to json, and checks for errors.
     '''
-    response_json = json.loads(response.text)
+    try: 
+        response_json = json.loads(response.text)
+    except Exception as e:
+        log(e)
+        log(response)
+        return False
     try:  
         response.raise_for_status()
     except: 
@@ -124,9 +129,10 @@ def parse_video_url(item):
         video_id = video_id
     )
 
-def get_video_urls_from_playlist_id(playlist_id, key):
+def get_video_urls_from_playlist_id(playlist_id, key, next_page_token=None):
     '''
     Returns all video URLs from a play list id.
+    # cache it?
     '''
     http_endpoint = ("https://www.googleapis.com/youtube/v3/playlistItems"
                      "?part=snippet&playlistId={}"
@@ -135,24 +141,22 @@ def get_video_urls_from_playlist_id(playlist_id, key):
     iterations = 0
     run = True
     while run:
+        if IS_DEV and iterations > 2: run = False    
         response = requests.get(http_endpoint)
         response_json = load_response(response)
         if response_json:
             for item in response_json['items']:
                 v_id = parse_video_url(item)
-                video_ids.append(v_id)
-                if v_id['publish_date'] < cutoff_date:
-                    run = False
+                video_ids.append(v_id)                
+                if v_id['publish_date'] < cutoff_date: run = False
             try: 
                 next_page_token = response_json['nextPageToken']
+                http_endpoint += "&pageToken={}".format(next_page_token)
                 iterations += 1
+                log(">> {} Videos to parse. Next Token = {}".format(
+                    len(video_ids), next_page_token))
             except:
                 run = False
-            if IS_DEV and iterations > 2: 
-                run = False
-            if next_page_token: 
-                http_endpoint += "&pageToken={}".format(next_page_token)    
-            log(">> {} Videos to parse".format(len(video_ids)))
         time.sleep(.1)
     
     return video_ids
@@ -213,12 +217,13 @@ def parse_channel(channel):
     metadata_filename, urls_filename = get_context(playlist_id)
     if not os.path.exists(metadata_filename):
         if not os.path.exists(urls_filename):
-            video_urls = get_video_urls_from_playlist_id(playlist_id, key)
+            video_urls = get_video_urls_from_playlist_id(playlist_id,
+                                                         urls_filename, 
+                                                         key)
             if not video_urls:
                 log(">> Listing Video URLs is not working for {}".format(yt_id))
                 return
-            df_urls = pd.DataFrame(video_urls)
-            df_urls.to_csv(urls_filename, index=False)
+            
             if IS_HPC: shutil.chown(urls_filename, group='smapp')
             log(">>> Video urls to parse saved here: {}".format(urls_filename))
 
