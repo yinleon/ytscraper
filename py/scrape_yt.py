@@ -41,8 +41,8 @@ def load_response(response):
     '''
     Loads the response to json, and checks for errors.
     '''
-    try: 
-        response_json = response.json()
+    response_json = json_loads(response.text)
+    try:  
         response.raise_for_status()
     except: 
         response_json = handle_error(response_json)
