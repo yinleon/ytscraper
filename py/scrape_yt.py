@@ -194,7 +194,7 @@ def parse_channel(channel):
                 log(">> Listing Video URLs is not working for {}".format(yt_id))
                 return
             pd.DataFrame(video_urls).to_csv(urls_filename, index=False)
-            shutil.chown(urls_filename, group='smapp')
+            if IS_HPC: shutil.chown(urls_filename, group='smapp')
             log(">>> Video urls to parse saved here: {}".format(urls_filename))
 
         else:
@@ -209,7 +209,7 @@ def parse_channel(channel):
             videos_meta.append(v_m)
         df = pd.DataFrame(videos_meta)
         df.to_csv(metadata_filename, index=False, sep='\t')  
-        shutil.chown(metadata_filename, group='smapp')
+        if IS_HPC: shutil.chown(metadata_filename, group='smapp')
         log("!!!! Video metadata saved here: {}".format(metadata_filename))
     else:
         log("!!!! ABD")
