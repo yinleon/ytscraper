@@ -21,7 +21,7 @@ def get_context(playlist_id):
     urls_filename = os.path.join(channel_dir, 'video_urls.csv')
     
     if IS_DEV:
-        channel_dir = channel_dir + '__test'
+        channel_dir = channel_dir
         metadata_filename = metadata_filename.replace('.tsv', '__test.tsv')
         urls_filename = urls_filename.replace('.csv', '__test.csv')
     
@@ -41,8 +41,8 @@ def load_response(response):
     '''
     Loads the response to json, and checks for errors.
     '''
-    response_json = response.json()
     try: 
+        response_json = response.json()
         response.raise_for_status()
     except: 
         response_json = handle_error(response_json)
@@ -107,6 +107,23 @@ def get_playlist_id(username, key):
     else:
         return response_json
 
+def parse_yt_datetime(date_str):
+    return datetime.datetime.strptime(date_str,"%Y-%m-%dT%H:%M:%S.%fZ")
+    
+def parse_video_url(item):
+    '''
+    Retruns a video id and a publish date 
+    from a item in the json object
+    '''
+    publish_date = item['snippet']['publishedAt']
+    publish_date = parse_yt_datetime(publish_date)
+    video_id = item['snippet']['resourceId']['videoId']
+    
+    return dict(
+        publish_date = publish_date,
+        video_id = video_id
+    )
+
 def get_video_urls_from_playlist_id(playlist_id, key):
     '''
     Returns all video URLs from a play list id.
@@ -114,28 +131,29 @@ def get_video_urls_from_playlist_id(playlist_id, key):
     http_endpoint = ("https://www.googleapis.com/youtube/v3/playlistItems"
                      "?part=snippet&playlistId={}"
                      "&maxResults=50&key={}".format(playlist_id, key))
-    next_page_token = None
     video_ids = []
     iterations = 0
     run = True
     while run:
-        if next_page_token: 
-            http_endpoint += "&pageToken={}".format(next_page_token)    
         response = requests.get(http_endpoint)
         response_json = load_response(response)
         if response_json:
             for item in response_json['items']:
-                video_ids.append(item['snippet']['resourceId']['videoId'])
+                v_id = parse_video_url(item)
+                video_ids.append(v_id)
+                if v_id['publish_date'] < cutoff_date:
+                    run = False
             try: 
                 next_page_token = response_json['nextPageToken']
                 iterations += 1
             except:
                 run = False
-            if IS_DEV:
-                if iterations > 2: 
-                    run = False
+            if IS_DEV and iterations > 2: 
+                run = False
+            if next_page_token: 
+                http_endpoint += "&pageToken={}".format(next_page_token)    
             log(">> {} Videos to parse".format(len(video_ids)))
-        time.sleep(1)
+        time.sleep(.1)
     
     return video_ids
 
@@ -144,9 +162,10 @@ def parse_video_metadata(item):
     Parses a JSON object for relevant fields
     '''    
     video_meta = dict(
+        video_id = item['id'],
         channel_title = item["snippet"].get("channelTitle"),
         channel_id =item["snippet"].get("channelId"),
-        video_publish_date = item["snippet"].get("publishedAt"),
+        video_publish_date = parse_yt_datetime(item["snippet"].get("publishedAt")),
         video_title = item["snippet"].get("title"),
         video_description = item["snippet"].get("description"),
         video_category = item["snippet"].get("categoryId"),
@@ -160,22 +179,27 @@ def parse_video_metadata(item):
     
     return video_meta
 
-def get_video_metadata(video_id, key):
+def get_video_metadata(video_ids, key):
     '''
     Gets the raw video metadata, and parses it.
     '''
     http_endpoint = ("https://www.googleapis.com/youtube/v3/videos"
                      "?part=statistics,snippet"
-                     "&id={}&key={}".format(video_id, key))
+                     "&id={}&key={}".format(','.join(video_ids), key))
     response = requests.get(http_endpoint)
     response_json = load_response(response)
-    video_meta = {}
-    if response_json:   
-        video_meta = response_json['items'][0]
-        video_meta = parse_video_metadata(video_meta)
+    video_meta = []
+    if response_json: 
+        for item in response_json['items']:
+            video_meta.append(parse_video_metadata(item))
         
     return video_meta
 
+def chunker(seq, n):
+    '''
+    Chunks an iterator (seq) into length (n).
+    '''
+    return (seq[pos:pos + n] for pos in range(0, len(seq), n))
 
 def parse_channel(channel):
     log(channel)
@@ -193,20 +217,25 @@ def parse_channel(channel):
             if not video_urls:
                 log(">> Listing Video URLs is not working for {}".format(yt_id))
                 return
-            pd.DataFrame(video_urls).to_csv(urls_filename, index=False)
+            df_urls = pd.DataFrame(video_urls)
+            df_urls.to_csv(urls_filename, index=False)
             if IS_HPC: shutil.chown(urls_filename, group='smapp')
             log(">>> Video urls to parse saved here: {}".format(urls_filename))
 
         else:
             log(">> Video urls saved previously.")
-            video_urls = pd.read_csv(urls_filename)['0'].tolist()
-        
+            df_urls = pd.read_csv(urls_filename)
+            df_urls['publish_date'] = pd.to_datetime(df_urls['publish_date'])
+
+        video_urls = (df_urls[df_urls['publish_date'] >= cutoff_date]
+                      ['video_id'].tolist())
+       
         # parse each video from the user
         if IS_DEV: video_urls = video_urls[:100] 
         videos_meta = []
-        for videos_url in tqdm(video_urls):
-            v_m = get_video_metadata(video_url, key)
-            videos_meta.append(v_m)
+        for video_ids_ in tqdm(chunker(video_urls, 50)):
+            videos_meta.extend(get_video_metadata(video_ids_, key))
+            time.sleep(.2)
         df = pd.DataFrame(videos_meta)
         df.to_csv(metadata_filename, index=False, sep='\t')  
         if IS_HPC: shutil.chown(metadata_filename, group='smapp')
