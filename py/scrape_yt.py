@@ -235,11 +235,11 @@ def parse_channel(channel):
             df_urls['publish_date'] = pd.to_datetime(df_urls['publish_date'])
 
         video_urls = (df_urls[df_urls['publish_date'] >= cutoff_date]
-                      ['video_id'].unique())
+                             ['video_id'].unique())
        
         # parse each video from the user
         if IS_DEV: video_urls = video_urls[:100] 
-        log("Going to collect metadata for {} videos".format(len(video_urls))
+        log("Going to collect metadata for {} videos".format(len(video_urls)))
         videos_meta = []
         for i, video_ids_ in enumerate(chunker(video_urls, 50)):
             log("Chunk {}".format(i))
