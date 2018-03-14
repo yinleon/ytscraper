@@ -240,7 +240,7 @@ def parse_channel(channel):
         # parse each video from the user
         if IS_DEV: video_urls = video_urls[:100] 
         videos_meta = []
-        for video_ids_ in tqdm(chunker(video_urls, 50)):
+        for video_ids_ in chunker(video_urls, 50):
             videos_meta.extend(get_video_metadata(video_ids_, key))
             time.sleep(.2)
         df = pd.DataFrame(videos_meta)
