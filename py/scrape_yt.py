@@ -92,7 +92,7 @@ def get_youtube_id(channel_url):
     '''
     From a URL returns the YT ID.
     '''
-    return channel_url.rstrip('/').split('/')[-1]
+    return channel_url.rstrip('/').rstrip('/featured').split('/')[-1]
 
 
 def get_playlist_id(username, key):
