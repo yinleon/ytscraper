@@ -21,7 +21,6 @@ def get_context(playlist_id):
     urls_filename = os.path.join(channel_dir, 'video_urls.csv')
     
     if IS_DEV:
-        channel_dir = channel_dir
         metadata_filename = metadata_filename.replace('.tsv', '__test.tsv')
         urls_filename = urls_filename.replace('.csv', '__test.csv')
     
@@ -134,14 +133,19 @@ def get_video_urls_from_playlist_id(playlist_id, key, next_page_token=None):
     Returns all video URLs from a play list id.
     # cache it?
     '''
-    http_endpoint = ("https://www.googleapis.com/youtube/v3/playlistItems"
-                     "?part=snippet&playlistId={}"
-                     "&maxResults=50&key={}".format(playlist_id, key))
+    next_page_token = False
     video_ids = []
     iterations = 0
     run = True
     while run:
-        if IS_DEV and iterations > 2: run = False    
+        if IS_DEV and iterations > 25: run = False
+        http_endpoint = ("https://www.googleapis.com/youtube/v3/playlistItems"
+                         "?part=snippet&playlistId={}"
+                         "&maxResults=50&key={}".format(playlist_id, key))
+        
+        if next_page_token:
+            http_endpoint += "&pageToken={}".format(next_page_token)
+
         response = requests.get(http_endpoint)
         response_json = load_response(response)
         if response_json:
@@ -151,7 +155,6 @@ def get_video_urls_from_playlist_id(playlist_id, key, next_page_token=None):
                 if v_id['publish_date'] < cutoff_date: run = False
             try: 
                 next_page_token = response_json['nextPageToken']
-                http_endpoint += "&pageToken={}".format(next_page_token)
                 iterations += 1
                 log(">> {} Videos to parse. Next Token = {}".format(
                     len(video_ids), next_page_token))
@@ -217,13 +220,12 @@ def parse_channel(channel):
     metadata_filename, urls_filename = get_context(playlist_id)
     if not os.path.exists(metadata_filename):
         if not os.path.exists(urls_filename):
-            video_urls = get_video_urls_from_playlist_id(playlist_id,
-                                                         urls_filename, 
-                                                         key)
+            video_urls = get_video_urls_from_playlist_id(playlist_id, key)
             if not video_urls:
                 log(">> Listing Video URLs is not working for {}".format(yt_id))
                 return
-            
+            df_urls = pd.DataFrame(video_urls)
+            df_urls.to_csv(urls_filename, index=False)
             if IS_HPC: shutil.chown(urls_filename, group='smapp')
             log(">>> Video urls to parse saved here: {}".format(urls_filename))
 
@@ -233,7 +235,7 @@ def parse_channel(channel):
             df_urls['publish_date'] = pd.to_datetime(df_urls['publish_date'])
 
         video_urls = (df_urls[df_urls['publish_date'] >= cutoff_date]
-                      ['video_id'].tolist())
+                      ['video_id'].unique())
        
         # parse each video from the user
         if IS_DEV: video_urls = video_urls[:100] 
